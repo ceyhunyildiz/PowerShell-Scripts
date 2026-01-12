@@ -1,4 +1,6 @@
-﻿# ==============================
+# AD üzerinde FL ile biten grupları çekiyor.
+ 
+# ==============================
 # FL Groups – Nested Members
 # Windows PowerShell 5.1
 # ==============================
