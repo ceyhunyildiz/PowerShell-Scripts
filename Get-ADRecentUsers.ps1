@@ -1,7 +1,26 @@
-<# 
-AD - Son 7 günde oluşturulan kullanıcıları Excel'e aktarır ve Excel'i otomatik açar.
-Alanlar: SamAccountName, DisplayName, Mail, Description, POBox
+<#
+.SYNOPSIS
+Exports Active Directory users created in the last 7 days to Excel.
+
+.DESCRIPTION
+Retrieves Active Directory users created within the last 7 days and exports
+the following attributes to an Excel file:
+- SamAccountName
+- DisplayName
+- Mail
+- Description
+- POBox
+
+The generated Excel file is automatically opened after export.
+
+.AUTHOR
+Ceyhun Yıldız
+
+.DATE
+2026-01-16
 #>
+
+
 
 # --- Ön kontroller ---
 if (-not (Get-Module -ListAvailable -Name ActiveDirectory)) {
