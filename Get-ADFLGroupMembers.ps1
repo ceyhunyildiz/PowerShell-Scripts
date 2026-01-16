@@ -1,9 +1,23 @@
-# AD üzerinde FL ile biten grupları çekiyor.
- 
-# ==============================
-# FL Groups – Nested Members
-# Windows PowerShell 5.1
-# ==============================
+<#
+.SYNOPSIS
+Retrieves members of Active Directory groups ending with "FL".
+
+.DESCRIPTION
+Identifies Active Directory groups whose names end with "FL" and retrieves
+their members, including nested group memberships.
+
+This script is commonly used to analyze role-based or functional
+group structures in Active Directory environments.
+
+.AUTHOR
+Ceyhun Yıldız
+
+.DATE
+2026-01-16
+#>
+
+
+
 
 Import-Module ActiveDirectory -ErrorAction Stop
 $ErrorActionPreference = "Stop"
