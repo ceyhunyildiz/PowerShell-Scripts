@@ -41,7 +41,7 @@ using **robocopy** for performance and reliability.
 ---
 
 ### 🔹 Export-ADUsersToExcel.ps1
-Exports a wide range of Active Directory user attributes to a **real Excel (.xlsx)** file.
+Exports a wide range of Active Directory user attributes to an **Excel (.xlsx)** file.
 
 **Key features**
 - Comprehensive AD attribute export
@@ -89,5 +89,17 @@ Exports Active Directory users created within the **last 7 days** to an Excel fi
 
 ## 📁 Output Structure
 
-By default, all scripts generate their output under:
+By default, all scripts generate their output under the following directory:
+Output files may include Excel reports (`.xlsx`), CSV files (`.csv`),
+HTML reports, and log files depending on the script.
+The output directory can be customized in the **SETTINGS / AYARLAR**
+section at the beginning of each script.
 
+---
+
+## 🔐 Notes
+
+This repository does not contain credentials.
+Environment-specific values (such as domain names or file paths)
+should be adjusted in the settings section of each script.
+Always test scripts in a non-production environment before use.
