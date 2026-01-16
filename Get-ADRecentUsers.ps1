@@ -20,7 +20,8 @@ Ceyhun Yıldız
 2026-01-16
 #>
 
-
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
 
 # --- Ön kontroller ---
 if (-not (Get-Module -ListAvailable -Name ActiveDirectory)) {
@@ -40,10 +41,10 @@ $users = Get-ADUser -Filter { whenCreated -ge $since } -Properties DisplayName, 
         @{n='Açıklama';     e={$_.Description}},
         @{n='Posta Kutusu'; e={$_.POBox}},
         @{n='Oluşturulma';  e={$_.whenCreated}} |
-    Sort-Object Olusturulma -Descending
+    Sort-Object 'Oluşturulma' -Descending   # ✅ DÜZELTİLDİ
 
 # --- Çıktı dosyası ---
-$outDir  = "C:\Temp"
+$outDir = "C:\Temp"
 if (-not (Test-Path $outDir)) { New-Item -Path $outDir -ItemType Directory -Force | Out-Null }
 
 $outFile = Join-Path $outDir ("AD_Son7Gun_Kullanicilar_{0}.xlsx" -f (Get-Date -Format "yyyyMMdd_HHmmss"))
@@ -60,44 +61,51 @@ $workbook = $excel.Workbooks.Add()
 $sheet = $workbook.Worksheets.Item(1)
 $sheet.Name = "Son7Gun"
 
-# Başlıklar
-$headers = @("Kullanıcı Adı","Görünen Ad","Mail Adresi","Açıklama","Posta Kutusu","Oluşturulma")
-for ($c=0; $c -lt $headers.Count; $c++) {
-    $sheet.Cells.Item(1, $c+1).Value2 = $headers[$c]
+try {
+    # Başlıklar
+    $headers = @("Kullanıcı Adı","Görünen Ad","Mail Adresi","Açıklama","Posta Kutusu","Oluşturulma")
+    for ($c=0; $c -lt $headers.Count; $c++) {
+        $sheet.Cells.Item(1, $c+1).Value2 = $headers[$c]
+    }
+
+    # Satırlar
+    $row = 2
+    foreach ($u in $users) {
+        $sheet.Cells.Item($row,1).Value2 = $u.'Kullanıcı Adı'
+        $sheet.Cells.Item($row,2).Value2 = $u.'Görünen Ad'
+        $sheet.Cells.Item($row,3).Value2 = $u.'Mail Adresi'
+        $sheet.Cells.Item($row,4).Value2 = $u.'Açıklama'
+        $sheet.Cells.Item($row,5).Value2 = $u.'Posta Kutusu'
+        $sheet.Cells.Item($row,6).Value2 = ($u.'Oluşturulma').ToString("yyyy-MM-dd HH:mm:ss")
+        $row++
+    }
+
+    # Basit biçimlendirme
+    $used = $sheet.UsedRange
+    $used.EntireColumn.AutoFit() | Out-Null
+    $sheet.Range("A1:F1").Font.Bold = $true
+    $sheet.Range("A1:F1").AutoFilter() | Out-Null
+    $excel.ActiveWindow.SplitRow = 1
+    $excel.ActiveWindow.FreezePanes = $true
+
+    # Kaydet/Kapat
+    $workbook.SaveAs($outFile)
+    $workbook.Close($true)
+    $excel.Quit()
 }
-
-# Satırlar
-$row = 2
-foreach ($u in $users) {
-    $sheet.Cells.Item($row,1).Value2 = $u.'Kullanıcı Adı'
-    $sheet.Cells.Item($row,2).Value2 = $u.'Görünen Ad'
-    $sheet.Cells.Item($row,3).Value2 = $u.'Mail Adresi'
-    $sheet.Cells.Item($row,4).Value2 = $u.'Açıklama'
-    $sheet.Cells.Item($row,5).Value2 = $u.'Posta Kutusu'
-    $sheet.Cells.Item($row,6).Value2 = $u.'Oluşturulma'.ToString("yyyy-MM-dd HH:mm:ss")
-    $row++
+finally {
+    # ✅ Hata olsa bile COM temizliği garanti
+    if ($sheet)    { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($sheet)    | Out-Null }
+    if ($workbook) { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($workbook) | Out-Null }
+    if ($excel)    { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($excel)    | Out-Null }
+    [GC]::Collect()
+    [GC]::WaitForPendingFinalizers()
 }
-
-# Basit biçimlendirme
-$used = $sheet.UsedRange
-$used.EntireColumn.AutoFit() | Out-Null
-$sheet.Range("A1:F1").Font.Bold = $true
-$sheet.Range("A1:F1").AutoFilter() | Out-Null
-$excel.ActiveWindow.SplitRow = 1
-$excel.ActiveWindow.FreezePanes = $true
-
-# Kaydet/Kapat
-$workbook.SaveAs($outFile)
-$workbook.Close($true)
-$excel.Quit()
-
-# COM temizliği
-[System.Runtime.InteropServices.Marshal]::ReleaseComObject($sheet)    | Out-Null
-[System.Runtime.InteropServices.Marshal]::ReleaseComObject($workbook) | Out-Null
-[System.Runtime.InteropServices.Marshal]::ReleaseComObject($excel)    | Out-Null
-[GC]::Collect()
-[GC]::WaitForPendingFinalizers()
 
 # Excel'i aç
-Start-Process $outFile
-Write-Host "Excel oluşturuldu ve açıldı: $outFile"
+if (Test-Path $outFile) {
+    Start-Process $outFile
+    Write-Host "Excel oluşturuldu ve açıldı: $outFile" -ForegroundColor Green
+} else {
+    Write-Host "Dosya oluşturulamadı: $outFile" -ForegroundColor Red
+}
