@@ -16,44 +16,88 @@ Ceyhun Yıldız
 2026-01-16
 #>
 
+# Yazım hataları / tanımsız değişken gibi durumlarda daha erken hata yakalamak için
+Set-StrictMode -Version Latest
 
-
-
-Import-Module ActiveDirectory -ErrorAction Stop
+# Hata olduğunda scriptin devam etmesini istemiyoruz; direkt dursun
 $ErrorActionPreference = "Stop"
 
-# Paths
-$ReportsDir = "C:\AD_PS_Ops\Reports"
-if (-not (Test-Path $ReportsDir)) {
-    New-Item -ItemType Directory -Path $ReportsDir -Force | Out-Null
+# =========================
+# AYARLAR (Sadece burayı değiştirmen yeterli)
+# =========================
+
+# Raporların kaydedileceği ana klasör
+$OutputDir = "C:\AD_PS_Ops\Reports"
+
+# Sonu hangi ifadeyle biten gruplar aranacak?
+$Suffix = "FL"
+
+# CSV tamamlanınca otomatik açılsın mı?
+$OpenCsvAfterExport = $true
+
+# (Opsiyonel) Belirli bir OU içindeki gruplarda aramak istersen:
+# Örn: "OU=Groups,DC=domain,DC=local"
+$SearchBase = ""
+
+# =========================
+# ÖN KONTROLLER
+# =========================
+
+# ActiveDirectory modülü yüklü mü kontrol et (RSAT kurulu olmalı)
+if (-not (Get-Module -ListAvailable -Name ActiveDirectory)) {
+    throw "ActiveDirectory modülü bulunamadı. RSAT (Active Directory module) kurulu olmalı."
 }
 
-$Suffix    = "FL"
-$TimeStamp = Get-Date -Format "yyyyMMdd_HHmmss"
-$CsvPath   = Join-Path $ReportsDir "FL_Groups_$TimeStamp.csv"
-$HtmlPath  = Join-Path $ReportsDir "FL_Groups_$TimeStamp.html"
+# Modülü yükle (hata olursa Stop)
+Import-Module ActiveDirectory -ErrorAction Stop
 
-# Helper
-function Safe($v) {
+# Output klasörü yoksa oluştur
+New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
+
+# Zaman damgası (dosya adına eklenecek)
+$TimeStamp = Get-Date -Format "yyyyMMdd_HHmmss"
+
+# Çıktı dosyaları
+$CsvPath  = Join-Path $OutputDir "FL_Groups_$TimeStamp.csv"
+$HtmlPath = Join-Path $OutputDir "FL_Groups_$TimeStamp.html"
+
+# =========================
+# YARDIMCI FONKSİYONLAR
+# =========================
+
+# Null değerleri boş string’e çevir (CSV/HTML’de daha temiz görünür)
+function Safe {
+    param([object]$v)
     if ($null -eq $v) { return "" }
     return [string]$v
 }
 
-# Recursive group expansion
+# HTML içine basarken özel karakterleri encode et (HTML kırılmasını engeller)
+function HtmlEncode {
+    param([string]$s)
+    if ([string]::IsNullOrEmpty($s)) { return "" }
+    return [System.Net.WebUtility]::HtmlEncode($s)
+}
+
+# Nested (iç içe) grup üyeliklerini recursive çözen fonksiyon
 function Get-NestedMembers {
     param(
-        [string]$GroupDN,
-        [string]$TopGroupName,
-        [string]$Path,
-        [hashtable]$Visited
+        [string]$GroupDN,         # İşlenecek grubun DN'i
+        [string]$TopGroupName,    # En üst (raporda görünen) grup adı
+        [string]$Path,            # Üyeliğin yolu (hangi gruplardan geçti)
+        [hashtable]$Visited       # Loop engelleme (aynı gruba tekrar girme)
     )
 
+    # Ziyaret tablosu yoksa oluştur
     if (-not $Visited) { $Visited = @{} }
+
+    # Aynı gruba tekrar girmeyi engelle (loop riskini azaltır)
     if ($Visited.ContainsKey($GroupDN)) { return @() }
     $Visited[$GroupDN] = $true
 
     $rows = @()
 
+    # Grup üyelerini çek (hata olursa boş dön)
     try {
         $members = Get-ADGroupMember -Identity $GroupDN
     } catch {
@@ -62,10 +106,16 @@ function Get-NestedMembers {
 
     foreach ($m in $members) {
 
+        # Üye başka bir grupsa, onun içine de gir (nested)
         if ($m.objectClass -eq "group") {
             $newPath = "$Path > $($m.Name)"
-            $rows += Get-NestedMembers -GroupDN $m.DistinguishedName -TopGroupName $TopGroupName -Path $newPath -Visited $Visited
+            $rows += Get-NestedMembers `
+                -GroupDN $m.DistinguishedName `
+                -TopGroupName $TopGroupName `
+                -Path $newPath `
+                -Visited $Visited
         }
+        # Üye kullanıcıysa detaylarını çek ve satır üret
         elseif ($m.objectClass -eq "user") {
             $u = Get-ADUser -Identity $m.DistinguishedName -Properties DisplayName,Mail,Enabled -ErrorAction SilentlyContinue
 
@@ -83,22 +133,64 @@ function Get-NestedMembers {
     return $rows
 }
 
-# ================= MAIN =================
+# =========================
+# MAIN
+# =========================
 
 Write-Host "Aranıyor: Adı veya SamAccountName'i '$Suffix' ile biten gruplar..." -ForegroundColor Cyan
 
-$groups = Get-ADGroup -Filter "Name -like '*$Suffix' -or SamAccountName -like '*$Suffix'" `
-            -Properties Name,DistinguishedName
+# Grup araması parametreleri
+$groupParams = @{
+    Filter     = "Name -like '*$Suffix' -or SamAccountName -like '*$Suffix'"
+    Properties = @("Name","DistinguishedName")
+}
 
-$groups = @($groups)   # 🔑 GARANTİ ARRAY
+# SearchBase verilmişse grupları o OU altında arar (opsiyonel)
+if (-not [string]::IsNullOrWhiteSpace($SearchBase)) {
+    $groupParams.SearchBase = $SearchBase
+    Write-Host "Bilgi: SearchBase kullanılıyor -> $SearchBase" -ForegroundColor Yellow
+}
+
+# Grupları çek
+$groups = Get-ADGroup @groupParams
+
+# Null veya tek öğe gelme ihtimaline karşı array garantisi
+$groups = @($groups)
 
 Write-Host ("Bulunan grup sayısı: {0}" -f $groups.Length) -ForegroundColor Yellow
 
+# Hiç grup yoksa boş rapor üretip çık
+if ($groups.Length -eq 0) {
+    # Boş CSV
+    @() | Export-Csv -Path $CsvPath -NoTypeInformation -Encoding UTF8
+
+    # Boş HTML
+    $emptyHtml = @"
+<html>
+<head><meta charset='utf-8'><title>FL Groups Report</title></head>
+<body style="font-family:Segoe UI;">
+<h2>FL Grupları – Nested Üyeler</h2>
+<p>Hiç grup bulunamadı. (Suffix: $Suffix)</p>
+</body></html>
+"@
+    Set-Content -Path $HtmlPath -Value $emptyHtml -Encoding UTF8
+
+    Write-Host "Hiç grup bulunamadı. Boş raporlar oluşturuldu." -ForegroundColor Yellow
+    Write-Host "CSV  : $CsvPath"
+    Write-Host "HTML : $HtmlPath"
+    return
+}
+
+# Tüm grupların üyelerini toplamak için
 $allRows = @()
 
 foreach ($g in $groups) {
     Write-Host "İşleniyor: $($g.Name)" -ForegroundColor DarkGray
+
+    # Her grup için ayrı visited tablosu (loop önleme)
     $visited = @{}
+
+    # Nested üyeleri çek
     $allRows += Get-NestedMembers `
         -GroupDN $g.DistinguishedName `
         -TopGroupName $g.Name `
@@ -106,10 +198,13 @@ foreach ($g in $groups) {
         -Visited $visited
 }
 
-# CSV
+# CSV export (Excel uyumlu)
 $allRows | Export-Csv -Path $CsvPath -NoTypeInformation -Encoding UTF8
 
-# HTML (basit, sağlam)
+# =========================
+# HTML RAPOR
+# =========================
+
 $html = @"
 <html>
 <head>
@@ -123,6 +218,7 @@ th{background:#142040}
 tr:nth-child(even){background:#101a30}
 </style>
 </head>
+<body>
 <h2>FL Grupları – Nested Üyeler</h2>
 <table>
 <tr>
@@ -137,27 +233,32 @@ tr:nth-child(even){background:#101a30}
 
 foreach ($r in $allRows) {
     $html += "<tr>
-<td>$($r.GrupAdi)</td>
-<td>$($r.Uye)</td>
-<td>$($r.Hesap)</td>
-<td>$($r.Mail)</td>
-<td>$($r.Enabled)</td>
-<td>$($r.Path)</td>
+<td>$(HtmlEncode (Safe $r.GrupAdi))</td>
+<td>$(HtmlEncode (Safe $r.Uye))</td>
+<td>$(HtmlEncode (Safe $r.Hesap))</td>
+<td>$(HtmlEncode (Safe $r.Mail))</td>
+<td>$(HtmlEncode (Safe $r.Enabled))</td>
+<td>$(HtmlEncode (Safe $r.Path))</td>
 </tr>"
 }
 
 $html += "</table></body></html>"
 
+# HTML dosyasını yaz
 Set-Content -Path $HtmlPath -Value $html -Encoding UTF8
+
+# =========================
+# SONUÇ / AÇMA
+# =========================
 
 Write-Host ""
 Write-Host "TAMAMLANDI ✅" -ForegroundColor Green
 Write-Host "CSV  : $CsvPath"
 Write-Host "HTML : $HtmlPath"
+Write-Host ("Toplam satır: {0}" -f @($allRows).Count) -ForegroundColor Yellow
 Write-Host ""
 
-# CSV dosyasını Excel ile otomatik aç
-if (Test-Path $CsvPath) {
+# CSV dosyasını otomatik aç (Excel varsayılan uygulama olarak açar)
+if ($OpenCsvAfterExport -and (Test-Path $CsvPath)) {
     Invoke-Item -Path $CsvPath
 }
-
