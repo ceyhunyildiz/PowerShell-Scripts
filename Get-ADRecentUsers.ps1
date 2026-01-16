@@ -20,19 +20,48 @@ Ceyhun Yıldız
 2026-01-16
 #>
 
+# Yazım hatalarını ve beklenmedik durumları daha erken yakalamak için
 Set-StrictMode -Version Latest
+
+# Hata olduğunda devam etmesin, direkt dursun
 $ErrorActionPreference = "Stop"
 
-# --- Ön kontroller ---
+# =========================
+# AYARLAR (Sadece burayı değiştirmen yeterli)
+# =========================
+
+# Kaç gün geriye giderek kullanıcıları çeksin?
+$DaysBack = 7
+
+# Çıktıların kaydedileceği klasör (repo standardı)
+$OutputDir = "C:\AD_PS_Ops\Reports"
+
+# Export bittiğinde Excel otomatik açılsın mı?
+$OpenAfterExport = $true
+
+# =========================
+# ÖN KONTROLLER
+# =========================
+
+# ActiveDirectory modülü yüklü mü? (RSAT gerekli)
 if (-not (Get-Module -ListAvailable -Name ActiveDirectory)) {
     throw "ActiveDirectory modülü bulunamadı. RSAT/AD module kurulu olmalı."
 }
+
+# AD modülünü yükle
 Import-Module ActiveDirectory -ErrorAction Stop
 
-# --- Filtre zamanı ---
-$since = (Get-Date).AddDays(-7)
+# Output klasörü yoksa oluştur
+New-Item -Path $OutputDir -ItemType Directory -Force | Out-Null
 
-# --- Veriyi çek ---
+# =========================
+# VERİ ÇEKME
+# =========================
+
+# Filtre zamanı: bugün - DaysBack
+$since = (Get-Date).AddDays(-$DaysBack)
+
+# Son X günde oluşturulan kullanıcıları çek
 $users = Get-ADUser -Filter { whenCreated -ge $since } -Properties DisplayName, Mail, Description, POBox, whenCreated |
     Select-Object `
         @{n='Kullanıcı Adı'; e={$_.SamAccountName}},
@@ -41,34 +70,54 @@ $users = Get-ADUser -Filter { whenCreated -ge $since } -Properties DisplayName, 
         @{n='Açıklama';     e={$_.Description}},
         @{n='Posta Kutusu'; e={$_.POBox}},
         @{n='Oluşturulma';  e={$_.whenCreated}} |
-    Sort-Object 'Oluşturulma' -Descending   # ✅ DÜZELTİLDİ
+    Sort-Object 'Oluşturulma' -Descending
 
-# --- Çıktı dosyası ---
-$outDir = "C:\Temp"
-if (-not (Test-Path $outDir)) { New-Item -Path $outDir -ItemType Directory -Force | Out-Null }
+# ✅ KRİTİK KORUMA:
+# Hiç kullanıcı yoksa Excel COM’a girip gereksiz işlem yapma
+if (-not $users -or $users.Count -eq 0) {
+    Write-Host "Son $DaysBack gün içinde oluşturulan kullanıcı bulunamadı." -ForegroundColor Yellow
+    return
+}
 
-$outFile = Join-Path $outDir ("AD_Son7Gun_Kullanicilar_{0}.xlsx" -f (Get-Date -Format "yyyyMMdd_HHmmss"))
+# =========================
+# ÇIKTI DOSYASI
+# =========================
 
-# --- Excel'e yaz (COM) ---
+# Zaman damgası ile benzersiz dosya adı
+$TimeStamp = Get-Date -Format "yyyyMMdd_HHmmss"
+
+# Excel dosyası yolu
+$outFile = Join-Path $OutputDir ("AD_Son{0}Gun_Kullanicilar_{1}.xlsx" -f $DaysBack, $TimeStamp)
+
+# =========================
+# EXCEL'E YAZ (COM)
+# =========================
+
+# Excel COM objesi oluştur
 try {
     $excel = New-Object -ComObject Excel.Application
 } catch {
     throw "Excel COM objesi oluşturulamadı. Bu makinede Microsoft Excel yüklü olmayabilir."
 }
 
+# Excel arka planda çalışsın
 $excel.Visible = $false
+
+# Yeni workbook ve sheet oluştur
 $workbook = $excel.Workbooks.Add()
 $sheet = $workbook.Worksheets.Item(1)
-$sheet.Name = "Son7Gun"
+$sheet.Name = "Son$DaysBack" + "Gun"
 
 try {
-    # Başlıklar
+    # Başlıklar (kolon isimleri)
     $headers = @("Kullanıcı Adı","Görünen Ad","Mail Adresi","Açıklama","Posta Kutusu","Oluşturulma")
+
+    # Başlık satırını yaz
     for ($c=0; $c -lt $headers.Count; $c++) {
         $sheet.Cells.Item(1, $c+1).Value2 = $headers[$c]
     }
 
-    # Satırlar
+    # Verileri yaz (2. satırdan itibaren)
     $row = 2
     foreach ($u in $users) {
         $sheet.Cells.Item($row,1).Value2 = $u.'Kullanıcı Adı'
@@ -80,7 +129,7 @@ try {
         $row++
     }
 
-    # Basit biçimlendirme
+    # Biçimlendirme: kolonları sığdır, başlığı bold yap, filtre ekle, başlığı dondur
     $used = $sheet.UsedRange
     $used.EntireColumn.AutoFit() | Out-Null
     $sheet.Range("A1:F1").Font.Bold = $true
@@ -88,13 +137,13 @@ try {
     $excel.ActiveWindow.SplitRow = 1
     $excel.ActiveWindow.FreezePanes = $true
 
-    # Kaydet/Kapat
+    # Kaydet ve kapat
     $workbook.SaveAs($outFile)
     $workbook.Close($true)
     $excel.Quit()
 }
 finally {
-    # ✅ Hata olsa bile COM temizliği garanti
+    # COM temizliği: Excel process arkada kalmasın
     if ($sheet)    { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($sheet)    | Out-Null }
     if ($workbook) { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($workbook) | Out-Null }
     if ($excel)    { [System.Runtime.InteropServices.Marshal]::ReleaseComObject($excel)    | Out-Null }
@@ -102,9 +151,17 @@ finally {
     [GC]::WaitForPendingFinalizers()
 }
 
-# Excel'i aç
-if (Test-Path $outFile) {
+# =========================
+# DOSYAYI AÇ / BİLGİ
+# =========================
+
+# Excel dosyasını otomatik aç
+if ($OpenAfterExport -and (Test-Path $outFile)) {
     Start-Process $outFile
+}
+
+# Kullanıcıya bilgi ver
+if (Test-Path $outFile) {
     Write-Host "Excel oluşturuldu ve açıldı: $outFile" -ForegroundColor Green
 } else {
     Write-Host "Dosya oluşturulamadı: $outFile" -ForegroundColor Red
