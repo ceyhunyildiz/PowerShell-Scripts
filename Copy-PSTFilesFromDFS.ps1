@@ -1,4 +1,21 @@
-# DFS yapısında .pst dosyalarını pc'ye kopyalıyor.
+<#
+.SYNOPSIS
+Copies PST files from a DFS structure to a local computer.
+
+.DESCRIPTION
+Searches a DFS-based file system for PST files and copies them to a specified local directory on the computer.
+
+This script is typically used for collecting Outlook PST files from centralized DFS storage.
+
+.AUTHOR
+Ceyhun Yıldız
+
+.DATE
+2026-01-16
+#>
+
+
+
 
 # Kaynak: DFS yolu veya (tercihen) gerçek share
 $source = "\\DOMAIN\DFSRoot\Paylasim"
