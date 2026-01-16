@@ -1,3 +1,5 @@
+# DFS yapısında .pst dosyalarını pc'ye kopyalıyor.
+
 # Kaynak: DFS yolu veya (tercihen) gerçek share
 $source = "\\DOMAIN\DFSRoot\Paylasim"
 
