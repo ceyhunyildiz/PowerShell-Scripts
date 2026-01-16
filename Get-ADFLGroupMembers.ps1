@@ -155,3 +155,9 @@ Write-Host "TAMAMLANDI ✅" -ForegroundColor Green
 Write-Host "CSV  : $CsvPath"
 Write-Host "HTML : $HtmlPath"
 Write-Host ""
+
+# CSV dosyasını Excel ile otomatik aç
+if (Test-Path $CsvPath) {
+    Invoke-Item -Path $CsvPath
+}
+
