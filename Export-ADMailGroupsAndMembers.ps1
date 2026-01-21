@@ -1,19 +1,21 @@
 <#
 .SYNOPSIS
-Active Directory - Kullanıcı mail listesi + Mail grupları + Grup üyeleri (nested dahil) Excel raporu.
+Exports Active Directory mail-enabled groups and their members to Excel.
 
 .DESCRIPTION
-- AD'den kullanıcıların mail/UPN/proxyAddresses bilgilerini toplar.
-- Mail-enabled grupları (mail veya proxyAddresses veya mailNickname dolu olan grup objeleri) listeler.
-- Her grubun üyelerini nested (recursive) şekilde çıkarır.
-- Sonuçları tek bir Excel dosyasına 3 sayfa olarak yazar.
+Retrieves the following information from Active Directory:
+- User mail addresses (mail, UPN, proxyAddresses)
+- Mail-enabled groups (Distribution Groups and Mail-Enabled Security Groups)
+- Group members including nested memberships
+
+The collected data is exported into a single Excel file with multiple worksheets.
 
 .OUTPUTS
-.xlsx (ImportExcel modülü ile)
+Excel file (.xlsx)
 
 .REQUIREMENTS
-- RSAT / ActiveDirectory PowerShell modülü
-- ImportExcel PowerShell modülü (Excel kurulu olmak zorunda değil)
+- RSAT / ActiveDirectory PowerShell module
+- ImportExcel PowerShell module (Microsoft Excel is not required)
 
 .AUTHOR
 Ceyhun Yıldız
@@ -25,44 +27,42 @@ Ceyhun Yıldız
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# -----------------------------
-# Ayarlar
-# -----------------------------
-$Config = [ordered]@{
-    RaporKlasoru   = (Join-Path $env:USERPROFILE "Desktop")
-    DosyaOnEki     = "AD_Mail_Raporu"
-    ExcelAcilsin   = $true
+# =========================
+# AYARLAR (Sadece burayı değiştirmen yeterli)
+# =========================
+$OutputDir  = "C:\AD_PS_Ops\Reports"
+$FileName   = "AD_Mail_Groups_And_Members_{0}.xlsx" -f (Get-Date -Format "yyyyMMdd_HHmmss")
+$OutputPath = Join-Path $OutputDir $FileName
 
-    # Excel görünümü
-    TableStyle     = "Medium2"
-    FreezeTopRow   = $true
-    AutoSize       = $true
-    BoldTopRow     = $true
+# Excel görünümü
+$TableStyle    = "Medium2"
+$FreezeTopRow  = $true
+$AutoSize      = $true
+$BoldTopRow    = $true
 
-    # Mail grup tespiti (LDAP)
-    GroupLdapFilter = "(&(objectCategory=group)(|(mail=*)(proxyAddresses=*)(mailNickname=*)))"
+# Mail-enabled grup tespiti (LDAP)
+$GroupLdapFilter = "(&(objectCategory=group)(|(mail=*)(proxyAddresses=*)(mailNickname=*)))"
+
+# =========================
+# ÖN KONTROLLER
+# =========================
+if (-not (Test-Path $OutputDir)) {
+    New-Item -Path $OutputDir -ItemType Directory -Force | Out-Null
 }
 
-$Tarih = Get-Date -Format "yyyy-MM-dd_HH-mm"
-$ExcelPath = Join-Path $Config.RaporKlasoru ("{0}_{1}.xlsx" -f $Config.DosyaOnEki, $Tarih)
-
-# -----------------------------
-# Yardımcı Fonksiyonlar
-# -----------------------------
-function Write-Info {
-    param([Parameter(Mandatory)][string]$Message)
-    Write-Host $Message -ForegroundColor Cyan
+if (-not (Get-Module -ListAvailable -Name ActiveDirectory)) {
+    throw "ActiveDirectory modülü bulunamadı. Lütfen RSAT / AD PowerShell modülünü kurun."
 }
+Import-Module ActiveDirectory -ErrorAction Stop
 
-function Write-Ok {
-    param([Parameter(Mandatory)][string]$Message)
-    Write-Host $Message -ForegroundColor Green
+if (-not (Get-Module -ListAvailable -Name ImportExcel)) {
+    try {
+        Install-Module ImportExcel -Scope CurrentUser -Force -AllowClobber -ErrorAction Stop
+    } catch {
+        throw "ImportExcel modülü kurulamadı. PowerShell'i yönetici açın veya manuel kurun. Hata: $($_.Exception.Message)"
+    }
 }
-
-function Write-Warn {
-    param([Parameter(Mandatory)][string]$Message)
-    Write-Host $Message -ForegroundColor Yellow
-}
+Import-Module ImportExcel -ErrorAction Stop
 
 function TS {
     param([AllowNull()][string]$Text)
@@ -70,129 +70,11 @@ function TS {
     return $Text.Trim()
 }
 
-function Ensure-Module {
-    param(
-        [Parameter(Mandatory)][string]$Name,
-        [switch]$InstallIfMissing
-    )
+# =========================
+# 1) KULLANICILAR (mail)
+# =========================
+Write-Host "1/3 Kullanıcılar çekiliyor..." -ForegroundColor Cyan
 
-    if (-not (Get-Module -ListAvailable -Name $Name)) {
-        if ($InstallIfMissing) {
-            Write-Warn "$Name modülü bulunamadı. Kurulum deneniyor (CurrentUser)..."
-            Install-Module $Name -Scope CurrentUser -Force -AllowClobber
-        } else {
-            throw "$Name modülü bulunamadı. Lütfen ilgili bileşeni/RSAT'ı kurun."
-        }
-    }
-
-    Import-Module $Name -ErrorAction Stop
-}
-
-function Get-MailEnabledGroups {
-    param([Parameter(Mandatory)][string]$LdapFilter)
-
-    $raw = Get-ADGroup -LDAPFilter $LdapFilter -Properties mail, proxyAddresses, mailNickname, groupCategory, groupScope, displayName, managedBy
-
-    return ($raw | Select-Object `
-        @{n="GrupAdi";e={TS $_.displayName}},
-        @{n="SamAccountName";e={TS $_.sAMAccountName}},
-        @{n="GrupMail";e={TS $_.mail}},
-        @{n="ProxyAddresses";e={ if ($_.proxyAddresses) { ($_.proxyAddresses | ForEach-Object { TS $_ }) -join "; " } else { "" } }},
-        @{n="MailNickname";e={TS $_.mailNickname}},
-        @{n="GroupCategory";e={TS $_.groupCategory}},
-        @{n="GroupScope";e={TS $_.groupScope}},
-        @{n="ManagedByDN";e={TS $_.managedBy}},
-        @{n="DN";e={TS $_.DistinguishedName}} |
-        Sort-Object GrupAdi)
-}
-
-function Get-GroupMembersReport {
-    param(
-        [Parameter(Mandatory)]$Groups
-    )
-
-    foreach ($g in $Groups) {
-        $rawMembers = $null
-        try {
-            $rawMembers = Get-ADGroupMember -Identity $g.DN -Recursive -ErrorAction Stop
-        } catch {
-            [pscustomobject]@{
-                GrupAdi           = $g.GrupAdi
-                GrupMail          = $g.GrupMail
-                UyeTipi           = "HATA"
-                UyeDisplayName    = "Üyeler okunamadı: $($_.Exception.Message)"
-                UyeSamAccountName = ""
-                UyeUPN            = ""
-                UyeMail           = ""
-                UyeDN             = $g.DN
-            }
-            continue
-        }
-
-        foreach ($m in $rawMembers) {
-            $uyeTip  = switch ($m.objectClass) {
-                "user"  { "Kullanıcı" }
-                "group" { "Grup" }
-                default { TS $m.objectClass }
-            }
-
-            $uyeDisp = TS $m.Name
-            $uyeSam  = TS $m.SamAccountName
-            $uyeDn   = TS $m.DistinguishedName
-            $uyeUpn  = ""
-            $uyeMail = ""
-
-            if ($m.objectClass -eq "user") {
-                try {
-                    $u = Get-ADUser -Identity $m.DistinguishedName -Properties mail, userPrincipalName, displayName, sAMAccountName -ErrorAction Stop
-                    $uyeDisp = TS $u.displayName
-                    $uyeSam  = TS $u.sAMAccountName
-                    $uyeUpn  = TS $u.userPrincipalName
-                    $uyeMail = TS $u.mail
-                } catch { }
-            }
-            elseif ($m.objectClass -eq "group") {
-                try {
-                    $gg = Get-ADGroup -Identity $m.DistinguishedName -Properties mail, displayName, sAMAccountName -ErrorAction Stop
-                    $uyeDisp = TS $gg.displayName
-                    $uyeSam  = TS $gg.sAMAccountName
-                    $uyeMail = TS $gg.mail
-                } catch { }
-            }
-
-            [pscustomobject]@{
-                GrupAdi           = $g.GrupAdi
-                GrupMail          = $g.GrupMail
-                UyeTipi           = $uyeTip
-                UyeDisplayName    = $uyeDisp
-                UyeSamAccountName = $uyeSam
-                UyeUPN            = $uyeUpn
-                UyeMail           = $uyeMail
-                UyeDN             = $uyeDn
-            }
-        }
-    }
-}
-
-# -----------------------------
-# Ön Kontroller
-# -----------------------------
-Write-Info "Ön kontroller yapılıyor..."
-
-if (-not (Test-Path $Config.RaporKlasoru)) {
-    throw "Rapor klasörü bulunamadı: $($Config.RaporKlasoru)"
-}
-
-# Modüller
-Ensure-Module -Name "ActiveDirectory"
-Ensure-Module -Name "ImportExcel" -InstallIfMissing
-
-Write-Ok "Ön kontroller tamam."
-
-# -----------------------------
-# Veri Toplama
-# -----------------------------
-Write-Info "1/3 Kullanıcılar çekiliyor..."
 $Kullanicilar = Get-ADUser -Filter * -Properties mail, proxyAddresses, userPrincipalName, displayName, sAMAccountName, enabled |
     Select-Object `
         @{n="DisplayName";e={TS $_.displayName}},
@@ -203,37 +85,119 @@ $Kullanicilar = Get-ADUser -Filter * -Properties mail, proxyAddresses, userPrinc
         @{n="Enabled";e={$_.Enabled}},
         @{n="DN";e={TS $_.DistinguishedName}}
 
-Write-Info "2/3 Mail grupları çekiliyor..."
-$Gruplar = Get-MailEnabledGroups -LdapFilter $Config.GroupLdapFilter
-Write-Warn ("Bulunan mail-enabled grup sayısı: {0}" -f $Gruplar.Count)
+# =========================
+# 2) MAIL GRUPLARI
+# =========================
+Write-Host "2/3 Mail grupları çekiliyor..." -ForegroundColor Cyan
 
-Write-Info "3/3 Grup üyeleri çıkarılıyor (nested dahil)..."
-$GrupUyeleri = @(Get-GroupMembersReport -Groups $Gruplar)
-Write-Warn ("Toplam üye satırı: {0}" -f ($GrupUyeleri | Measure-Object).Count)
+$GruplarRaw = Get-ADGroup -LDAPFilter $GroupLdapFilter -Properties mail, proxyAddresses, mailNickname, groupCategory, groupScope, displayName, managedBy
 
-# -----------------------------
-# Excel'e Yaz
-# -----------------------------
-Write-Info "Excel raporu hazırlanıyor..."
+$Gruplar = $GruplarRaw |
+    Select-Object `
+        @{n="GrupAdi";e={TS $_.displayName}},
+        @{n="SamAccountName";e={TS $_.sAMAccountName}},
+        @{n="GrupMail";e={TS $_.mail}},
+        @{n="ProxyAddresses";e={ if ($_.proxyAddresses) { ($_.proxyAddresses | ForEach-Object { TS $_ }) -join "; " } else { "" } }},
+        @{n="MailNickname";e={TS $_.mailNickname}},
+        @{n="GroupCategory";e={TS $_.groupCategory}},
+        @{n="GroupScope";e={TS $_.groupScope}},
+        @{n="ManagedByDN";e={TS $_.managedBy}},
+        @{n="DN";e={TS $_.DistinguishedName}} |
+    Sort-Object GrupAdi
 
-if (Test-Path $ExcelPath) {
-    Remove-Item $ExcelPath -Force
+Write-Host ("Bulunan mail-enabled grup sayısı: {0}" -f $Gruplar.Count) -ForegroundColor Yellow
+
+# =========================
+# 3) GRUP ÜYELERİ (nested)
+# =========================
+Write-Host "3/3 Grup üyeleri çıkarılıyor (nested/recursive)..." -ForegroundColor Cyan
+
+$GrupUyeleri = foreach ($g in $Gruplar) {
+    $rawMembers = $null
+    try {
+        $rawMembers = Get-ADGroupMember -Identity $g.DN -Recursive -ErrorAction Stop
+    } catch {
+        [pscustomobject]@{
+            GrupAdi           = $g.GrupAdi
+            GrupMail          = $g.GrupMail
+            UyeTipi           = "HATA"
+            UyeDisplayName    = "Üyeler okunamadı: $($_.Exception.Message)"
+            UyeSamAccountName = ""
+            UyeUPN            = ""
+            UyeMail           = ""
+            UyeDN             = $g.DN
+        }
+        continue
+    }
+
+    foreach ($m in $rawMembers) {
+        $uyeTip = switch ($m.objectClass) {
+            "user"  { "Kullanıcı" }
+            "group" { "Grup" }
+            default { TS $m.objectClass }
+        }
+
+        $uyeDisplay = TS $m.Name
+        $uyeSam     = TS $m.SamAccountName
+        $uyeDN      = TS $m.DistinguishedName
+        $uyeUPN     = ""
+        $uyeMail    = ""
+
+        if ($m.objectClass -eq "user") {
+            try {
+                $u = Get-ADUser -Identity $m.DistinguishedName -Properties mail, userPrincipalName, displayName, sAMAccountName -ErrorAction Stop
+                $uyeDisplay = TS $u.displayName
+                $uyeSam     = TS $u.sAMAccountName
+                $uyeUPN     = TS $u.userPrincipalName
+                $uyeMail    = TS $u.mail
+            } catch { }
+        }
+        elseif ($m.objectClass -eq "group") {
+            try {
+                $gg = Get-ADGroup -Identity $m.DistinguishedName -Properties mail, displayName, sAMAccountName -ErrorAction Stop
+                $uyeDisplay = TS $gg.displayName
+                $uyeSam     = TS $gg.sAMAccountName
+                $uyeMail    = TS $gg.mail
+            } catch { }
+        }
+
+        [pscustomobject]@{
+            GrupAdi           = $g.GrupAdi
+            GrupMail          = $g.GrupMail
+            UyeTipi           = $uyeTip
+            UyeDisplayName    = $uyeDisplay
+            UyeSamAccountName = $uyeSam
+            UyeUPN            = $uyeUPN
+            UyeMail           = $uyeMail
+            UyeDN             = $uyeDN
+        }
+    }
 }
 
-$excelParams = @{
-    Path         = $ExcelPath
-    AutoSize     = $Config.AutoSize
-    FreezeTopRow = $Config.FreezeTopRow
-    BoldTopRow   = $Config.BoldTopRow
-    TableStyle   = $Config.TableStyle
+Write-Host ("Toplam üye satırı: {0}" -f ($GrupUyeleri | Measure-Object).Count) -ForegroundColor Yellow
+
+# =========================
+# EXCEL'E AKTAR
+# =========================
+Write-Host "Excel'e aktarılıyor..." -ForegroundColor Cyan
+
+if (Test-Path $OutputPath) {
+    Remove-Item $OutputPath -Force
 }
 
-$Kullanicilar | Export-Excel @excelParams -WorksheetName "Kullanicilar"
-$Gruplar      | Export-Excel @excelParams -WorksheetName "MailGruplari"
-$GrupUyeleri  | Export-Excel @excelParams -WorksheetName "GrupUyeleri"
-
-Write-Ok "Tamamlandı: $ExcelPath"
-
-if ($Config.ExcelAcilsin) {
-    Invoke-Item $ExcelPath
+$exportParams = @{
+    Path         = $OutputPath
+    AutoSize     = $AutoSize
+    FreezeTopRow = $FreezeTopRow
+    BoldTopRow   = $BoldTopRow
+    TableStyle   = $TableStyle
 }
+
+$Kullanicilar | Export-Excel @exportParams -WorksheetName "Kullanicilar"
+$Gruplar      | Export-Excel @exportParams -WorksheetName "MailGruplari"
+$GrupUyeleri  | Export-Excel @exportParams -WorksheetName "GrupUyeleri"
+
+Write-Host "Tamamlandı." -ForegroundColor Green
+Write-Host "Çıktı: $OutputPath" -ForegroundColor Green
+
+Invoke-Item $OutputPath
